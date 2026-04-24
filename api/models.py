@@ -375,6 +375,7 @@ def get_session(sid, metadata_only=False):
             })
             stripped.messages = []
             stripped.tool_calls = []
+            stripped._message_count = len(cached.messages) if cached.messages else 0
             return stripped
         # Session has a file on disk — evict cache and load only compact fields.
         with LOCK:
@@ -404,9 +405,13 @@ def get_session(sid, metadata_only=False):
                 pending_started_at=raw.get('pending_started_at'),
                 compression_anchor_visible_idx=raw.get('compression_anchor_visible_idx'),
                 compression_anchor_message_key=raw.get('compression_anchor_message_key'),
-                messages=None,
+                messages=[],
                 tool_calls=[],
             )
+            # compact() computes message_count from len(self.messages) (=0 since we set
+            # messages=[]). Store the real count in _message_count so routes.py can read it.
+            s._message_count = raw.get('message_count', len(raw.get('messages', [])))
+            return s
         except Exception:
             return None
     with LOCK:

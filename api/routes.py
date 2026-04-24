@@ -701,6 +701,11 @@ def handle_get(handler, parsed) -> bool:
                 "pending_attachments": getattr(s, "pending_attachments", []) if load_messages else [],
                 "pending_started_at": getattr(s, "pending_started_at", None),
             }
+            # compact() computes message_count from len(self.messages), which is 0
+            # when load_messages=False. Override with the real count from the session
+            # file so the sidebar unread badge is accurate.
+            if not load_messages:
+                raw["message_count"] = raw.get("message_count") or getattr(s, "_message_count", 0) or 0
             _t4 = _time.monotonic()
             if effective_model:
                 raw["model"] = effective_model
