@@ -356,21 +356,71 @@ def get_session(sid, metadata_only=False):
     next access is fast. Use this when you only need compact() metadata and not
     the actual message history (e.g., for fast sidebar switching).
     """
+    if metadata_only:
+        # Return a lightweight metadata-only view of the session, without
+        # loading the messages array. Two paths:
+        # 1. Session on disk: evict from cache, load only compact() fields.
+        #    Next ?messages=1 call will re-cache the full session.
+        # 2. Session only in memory (no disk file): strip messages from the
+        #    cached object and return a copy. The cached object stays intact
+        #    for the next ?messages=1 call.
+        p = SESSION_DIR / f'{sid}.json'
+        with LOCK:
+            cached = SESSIONS.get(sid)
+        if cached and not p.exists():
+            # Memory-only session: return stripped copy without evicting.
+            stripped = cached.__class__(**{
+                k: v for k, v in cached.__dict__.items()
+                if k not in ('messages', 'tool_calls')
+            })
+            stripped.messages = []
+            stripped.tool_calls = []
+            return stripped
+        # Session has a file on disk — evict cache and load only compact fields.
+        with LOCK:
+            if sid in SESSIONS:
+                del SESSIONS[sid]
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            return Session(
+                session_id=sid,
+                title=raw.get('title', 'Untitled'),
+                workspace=raw.get('workspace', ''),
+                model=raw.get('model', ''),
+                created_at=raw.get('created_at', 0),
+                updated_at=raw.get('updated_at', 0),
+                pinned=raw.get('pinned', False),
+                archived=raw.get('archived', False),
+                project_id=raw.get('project_id'),
+                profile=raw.get('profile', 'default'),
+                input_tokens=raw.get('input_tokens', 0),
+                output_tokens=raw.get('output_tokens', 0),
+                estimated_cost=raw.get('estimated_cost'),
+                personality=raw.get('personality'),
+                active_stream_id=raw.get('active_stream_id'),
+                pending_user_message=raw.get('pending_user_message'),
+                pending_attachments=[],
+                pending_started_at=raw.get('pending_started_at'),
+                compression_anchor_visible_idx=raw.get('compression_anchor_visible_idx'),
+                compression_anchor_message_key=raw.get('compression_anchor_message_key'),
+                messages=None,
+                tool_calls=[],
+            )
+        except Exception:
+            return None
     with LOCK:
         if sid in SESSIONS:
-            SESSIONS.move_to_end(sid)  # LRU: mark as recently used
+            SESSIONS.move_to_end(sid)
             return SESSIONS[sid]
-    if metadata_only:
-        s = Session.load_metadata_only(sid)
-    else:
-        s = Session.load(sid)
+    s = Session.load(sid)
     if s:
         with LOCK:
             SESSIONS[sid] = s
             SESSIONS.move_to_end(sid)
             while len(SESSIONS) > SESSIONS_MAX:
-                SESSIONS.popitem(last=False)  # evict least recently used
-        return s
+                SESSIONS.popitem(last=False)
+    return s
     raise KeyError(sid)
 
 def new_session(workspace=None, model=None, profile=None):
