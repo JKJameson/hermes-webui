@@ -16,6 +16,7 @@ from api.config import (
 )
 from api.workspace import get_last_workspace
 from api.agent_sessions import read_importable_agent_session_rows
+from api import wal as _wal
 
 logger = logging.getLogger(__name__)
 
@@ -584,6 +585,102 @@ def _apply_core_sync_or_error_marker(
     return True
 
 
+def _replay_wal_recovery(session) -> None:
+    """Replay WAL events into a freshly-loaded session to recover crashed streaming output.
+
+    Called only when ``session.active_stream_id`` is set (streaming was in-flight)
+    and the stream is no longer alive.  Safe to call repeatedly — replaying into an
+    already-recovered session adds duplicate messages, but the LRU eviction path in
+    ``get_session`` prevents a recovered session from being pinned in cache with
+    stale data (it is evicted if still stuck with messages=[] after repair fails).
+
+    Side-effects:
+      - Appends assistant message(s) to ``session.messages`` with recovered content.
+      - Appends tool call events to ``session.tool_calls`` if any were captured.
+      - Sets ``session.active_stream_id = None`` and clears pending state.
+      - Calls ``session.save()`` to persist the recovered data.
+      - Deletes the WAL file on successful recovery.
+
+    WAL is NOT replayed if the session has messages (normal completion path); the
+    WAL is only replayed when the session JSON on disk shows no assistant reply
+    for the in-flight stream (messages list ends with the user's pending message).
+    """
+    if not session.active_stream_id:
+        return
+
+    # Only replay WAL if the stream is no longer alive in STREAMS.
+    # If the stream IS still alive, the streaming thread is still running — WAL
+    # will be written normally; do not interfere.
+    try:
+        with STREAMS_LOCK:
+            if session.active_stream_id in STREAMS:
+                return  # stream still active — let it finish normally
+    except Exception:
+        return  # best-effort check
+
+    # Only replay if the last message in the session is from the user
+    # (i.e., the assistant reply is genuinely missing, not just not-yet-checkpointed).
+    if not session.messages or session.messages[-1].get('role') != 'user':
+        # Assistant message already present — no recovery needed.
+        return
+
+    events = _wal.read_wal(session.session_id)
+    if not events:
+        return  # No WAL — fall through to existing stale-pending repair
+
+    recovered = _wal.replay_wal(events)
+    if not recovered.get('content') and not recovered.get('tool_calls'):
+        return  # Nothing substantive to recover
+
+    # Valid WAL event list found.  Reconstruct assistant message content.
+    assistant_content = recovered.get('content', '')
+    # Strip trailing thinking/reasoning markup that was mid-stream when crashed.
+    import re as _re
+    assistant_content = _re.sub(
+        r'<think(?:ing)?\b[^>]*>.*',
+        '', assistant_content, flags=_re.DOTALL | _re.IGNORECASE
+    ).strip()
+
+    recovered_msg = {
+        'role': 'assistant',
+        'content': assistant_content,
+        'timestamp': int(time.time()),
+    }
+    # Only mark _partial if the content was cut off (no natural sentence end).
+    # Use a heuristic: ends with a letter/digit followed by no punctuation.
+    if assistant_content and assistant_content[-1].isalnum():
+        recovered_msg['_partial'] = True
+
+    session.messages.append(recovered_msg)
+
+    # Reconstruct tool_calls list from WAL tool events if present.
+    tool_calls = recovered.get('tool_calls', [])
+    if tool_calls:
+        session.tool_calls = session.tool_calls or []
+        for tc in tool_calls:
+            session.tool_calls.append({
+                'id': tc.get('id', ''),
+                'name': tc.get('name', ''),
+                'args': tc.get('args', ''),
+                'result': '',
+                'timestamp': int(time.time()),
+            })
+
+    # Clear pending state and persist.
+    session.active_stream_id = None
+    session.pending_user_message = None
+    session.pending_attachments = []
+    session.pending_started_at = None
+    session.save()
+    _wal.delete_wal(session.session_id)
+    logger.info(
+        "Session %s: WAL recovery replayed %d tokens, %d tool calls",
+        session.session_id,
+        len(assistant_content),
+        len(tool_calls),
+    )
+
+
 def _repair_stale_pending(session) -> bool:
     """Recover a sidecar stuck with messages=[] and stale pending state.
 
@@ -654,6 +751,15 @@ def get_session(sid, metadata_only=False):
     else:
         s = Session.load(sid)
     if s:
+        # WAL recovery: replay any unflushed streaming output from a crashed
+        # or killed process before adding the session to the cache.  This
+        # reconstructs partial assistant text (tokens streamed but not yet
+        # checkpointed) and tool call events so they are not silently lost.
+        if not metadata_only:
+            try:
+                _replay_wal_recovery(s)
+            except Exception:
+                pass  # WAL replay is best-effort; never block session load
         with LOCK:
             SESSIONS[sid] = s
             SESSIONS.move_to_end(sid)

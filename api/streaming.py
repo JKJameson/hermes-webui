@@ -28,6 +28,7 @@ from api.config import (
 )
 from api.helpers import redact_session_data
 from api.metering import meter
+from api import wal as _wal
 
 # Global lock for os.environ writes. Per-session locks (_agent_lock) prevent
 # concurrent runs of the SAME session, but two DIFFERENT sessions can still
@@ -1387,6 +1388,25 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
             q.put_nowait((event, data))
         except Exception:
             logger.debug("Failed to put event to queue")
+        # WAL: record every token, reasoning, tool event for crash recovery.
+        # write_wal_* are cheap (buffered, non-blocking); we call them after
+        # the queue put so the WAL never blocks SSE delivery.
+        if event == 'token':
+            _wal.write_wal_token(session_id, data.get('text', ''))
+        elif event == 'reasoning':
+            _wal.write_wal_reasoning(session_id, data.get('text', ''))
+        elif event == 'tool':
+            _wal.write_wal_tool(session_id, data.get('id', ''),
+                                data.get('name', ''), data.get('args', ''))
+        elif event == 'tool_result':
+            _wal.write_wal_tool_result(session_id, data.get('id', ''),
+                                       data.get('result', ''))
+        elif event == 'start':
+            _wal.write_wal_start(session_id, stream_id)
+        elif event == 'end' or event == 'stream_end':
+            _wal.write_wal_end(session_id, stream_id)
+        elif event == 'apperror':
+            _wal.write_wal_aperror(session_id, data.get('message', ''))
 
     # Initialised here (before any code that may raise) so the outer `finally`
     # block can safely check `if _checkpoint_stop is not None` even when an
@@ -1884,7 +1904,7 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
 
             def _periodic_checkpoint():
                 last_saved_activity = 0
-                while not _checkpoint_stop.wait(15):
+                while not _checkpoint_stop.wait(3):
                     try:
                         cur = _checkpoint_activity[0]
                         if cur > last_saved_activity:
@@ -1896,9 +1916,11 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
 
             _checkpoint_stop = threading.Event()
             # Persist the user message BEFORE streaming starts so it's durable even if
-            # the server crashes before the first checkpoint fires (every 15s).
+            # the server crashes before the first checkpoint fires (every 3 s).
             with _agent_lock:
                 s.save(touch_updated_at=True, skip_index=False)
+
+            put('start', {'stream_id': stream_id})
 
             _ckpt_thread = threading.Thread(
                 target=_periodic_checkpoint, daemon=True,
@@ -2216,12 +2238,16 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                 # Use the original session_id parameter (never reassigned), not s.session_id
                 # which may be rotated during context compression. The client captured
                 # activeSid = original session_id so they must match for stream_end to close.
+                put('end', {'stream_id': stream_id})
                 put('stream_end', {'session_id': session_id})
                 # Adaptive title refresh: re-generate title from latest exchange
                 # every N exchanges (when enabled in settings). Runs after stream_end
                 # so it doesn't block the stream.
                 _maybe_schedule_title_refresh(s, put, agent)
         finally:
+            # WAL: clean up the WAL file now that the stream has completed normally.
+            # (If the process crashes the WAL survives for replay on next load.)
+            _wal.delete_wal(session_id)
             # Stop the live metering ticker
             _metering_stop.set()
             # Unregister the gateway approval callback and unblock any threads
@@ -2551,14 +2577,15 @@ def cancel_stream(stream_id: str) -> bool:
                 _cancel_partial_text = live_partials.get(stream_id, '')
 
     # Session cleanup outside STREAMS_LOCK to preserve lock ordering.
-    # Acquire the per-session _agent_lock too, mirroring every other session
-    # writer (streaming success/error paths, periodic checkpoint, POST endpoints)
-    # so the cancel-path mutation races neither the checkpoint thread nor
-    # concurrent undo/retry calls.
+    # Use Session.load() (not get_session()) to load from disk directly,
+    # bypassing the SESSIONS cache.  After a process crash the in-memory
+    # session may carry partial/uncommitted state; loading fresh from the
+    # last checkpoint gives us a clean base to append the cancel marker.
     if _cancel_session_id:
         with _get_session_agent_lock(_cancel_session_id):
             try:
-                _cs = get_session(_cancel_session_id)
+                from api.models import Session as _Session
+                _cs = _Session.load(_cancel_session_id)
                 _cs.active_stream_id = None
                 _cs.pending_user_message = None
                 _cs.pending_attachments = []
