@@ -1393,6 +1393,12 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
         # the queue put so the WAL never blocks SSE delivery.
         if event == 'token':
             _wal.write_wal_token(session_id, data.get('text', ''))
+            # Signal checkpoint thread: any received token is progress worth persisting.
+            # This ensures text-only streams (no tool calls) still checkpoint every 3 s.
+            try:
+                _checkpoint_activity[0] += 1
+            except Exception:
+                pass
         elif event == 'reasoning':
             _wal.write_wal_reasoning(session_id, data.get('text', ''))
         elif event == 'tool':
