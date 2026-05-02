@@ -266,10 +266,14 @@ function renderProviderUsageIcons(){
   for(const u of _providerUsageCache) usageMap[u.provider]=u;
 
   const spacer=rail.querySelector('.rail-spacer');
+  const PROVIDER_SVGS={
+    minimax:`<img src="/static/icons/minimax_icon.svg" alt="Minimax" width="20" height="20" style="flex:none;vertical-align:middle">`,
+    zai:`<img src="/static/icons/zai_icon.svg" alt="Z.AI" width="20" height="20" style="flex:none;vertical-align:middle">`,
+  };
   const PROVIDER_ICONS={
     openrouter:'🌐',anthropic:'🧠',openai:'🤖',google:'🧮',
-    minimax:'🔵',groq:'⚡',deepseek:'🔍',mistral:'🌫️',
-    cohere:'🌊',xai:'✖️',zai:'⚡',ollama:'🔧',
+    minimax:null,groq:'⚡',deepseek:'🔍',mistral:'🌫️',
+    cohere:'🌊',xai:'✖️',zai:null,ollama:'🔧',
     nvidia:'🟢',gemini:'✨',copilot:'💠',nous:'🧩',
   };
   const PROVIDER_LABELS={
@@ -281,7 +285,8 @@ function renderProviderUsageIcons(){
 
   for(const provider of enabled){
     const usage=usageMap[provider];
-    const icon=PROVIDER_ICONS[provider]||'📦';
+    const svg=PROVIDER_SVGS[provider];
+    const emoji=PROVIDER_ICONS[provider];
     const label=PROVIDER_LABELS[provider]||provider;
     const btn=document.createElement('button');
     btn.className='rail-btn nav-tab provider-usage-btn';
@@ -310,7 +315,7 @@ function renderProviderUsageIcons(){
     }
 
     const iconSpan=document.createElement('span');
-    iconSpan.textContent=icon;
+    if(svg){iconSpan.innerHTML=svg;}else{iconSpan.textContent=emoji||'📦';}
     btn.appendChild(iconSpan);
 
     // Click: jump model selector to this provider
