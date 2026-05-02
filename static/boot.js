@@ -1341,6 +1341,8 @@ function applyBotName(){
   const _srch = document.getElementById('sessionSearch'); if (_srch) _srch.value = '';
   // Initialize reasoning chip on boot (fixes #1103 — chip hidden until session load)
   if(typeof fetchReasoningChip==='function') fetchReasoningChip();
+  // Load provider usage data for rail icons
+  if(typeof loadProviderUsage==='function') loadProviderUsage();
   const urlSession=(typeof _sessionIdFromLocation==='function')?_sessionIdFromLocation():null;
   const saved=urlSession||localStorage.getItem('hermes-webui-session');
   if(saved){
