@@ -12,7 +12,9 @@ def test_app_titlebar_no_longer_contains_tps_chip():
     assert 'id="tpsStat"' not in INDEX_HTML
 
 
-def test_app_titlebar_returns_to_centered_desktop_layout():
+def test_app_titlebar_uses_center_layout():
+    # The TPS chip moved to the sidebar (per-conversation indicator).
+    # The titlebar itself is centred, matching master's safe-area work.
     assert ".app-titlebar{display:flex;align-items:center;justify-content:center;" in STYLE_CSS
     assert ".app-titlebar-inner{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;justify-content:center;}" in STYLE_CSS
 
