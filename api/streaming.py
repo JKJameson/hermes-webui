@@ -60,7 +60,7 @@ def _get_ai_agent():
         except ImportError:
             pass
     return AIAgent
-from api.models import get_session, title_from
+from api.models import get_session, title_from, Session
 from api.workspace import set_last_workspace
 
 # Fields that are safe to send to LLM provider APIs.
@@ -2827,10 +2827,7 @@ def cancel_stream(stream_id: str) -> bool:
                         "Failed to recover pending user message on cancel for %s",
                         _cancel_session_id,
                     )
-=======
-                from api.models import Session as _Session
-                _cs = _Session.load(_cancel_session_id)
->>>>>>> 2de3fb0 (Add WAL crash-recovery for chat history safety)
+                _cs = Session.load(_cancel_session_id)
                 _cs.active_stream_id = None
                 _cs.pending_user_message = None
                 _cs.pending_attachments = []
