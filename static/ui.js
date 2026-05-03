@@ -294,8 +294,11 @@ function renderProviderUsageIcons(){
 
     // Tooltip text
     let tip=label;
-    if(usage&&usage.limit_5h>0){
-      tip=`${label}\n${_fmtUsageNum(usage.used_5h)}/${_fmtUsageNum(usage.limit_5h)} (5h)\n${_fmtUsageNum(usage.used_7d)}/${_fmtUsageNum(usage.limit_7d)} (7d)`;
+    if(usage&&(usage.limit_5h>0||usage.limit_7d>0)){
+      const parts=[];
+      if(usage.limit_5h>0) parts.push(`${_fmtUsageNum(usage.used_5h)}/${_fmtUsageNum(usage.limit_5h)} (5h)`);
+      if(usage.limit_7d>0) parts.push(`${_fmtUsageNum(usage.used_7d)}/${_fmtUsageNum(usage.limit_7d)} (7d)`);
+      tip=`${label}\n${parts.join('\n')}`;
     }else if(usage){
       tip=`${label}: no limit set`;
     }else{
@@ -303,12 +306,14 @@ function renderProviderUsageIcons(){
     }
     btn.title=tip;
 
-    // Usage fill bar (5h percentage)
-    if(usage&&usage.limit_5h>0){
-      const pct5h=Math.min((usage.used_5h/usage.limit_5h)*100,100);
+    // Usage fill bar (highest of 5h or 7d percentage)
+    if(usage&&(usage.limit_5h>0||usage.limit_7d>0)){
+      const pct5h=usage.limit_5h>0?(usage.used_5h/usage.limit_5h)*100:0;
+      const pct7d=usage.limit_7d>0?(usage.used_7d/usage.limit_7d)*100:0;
+      const pct=Math.min(Math.max(pct5h,pct7d),100);
       const fill=document.createElement('span');
       fill.className='provider-usage-fill';
-      fill.style.cssText=`position:absolute;left:0;bottom:0;width:100%;height:${pct5h}%;border-radius:0 0 8px 8px;background:${_providerUsageColor(pct5h)};transition:height .3s ease;pointer-events:none;opacity:.28;`;
+      fill.style.cssText=`position:absolute;left:0;bottom:0;width:100%;height:${pct}%;border-radius:0 0 8px 8px;background:${_providerUsageColor(pct)};transition:height .3s ease;pointer-events:none;opacity:.28;`;
       btn.style.position='relative';
       btn.style.overflow='hidden';
       btn.appendChild(fill);
