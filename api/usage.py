@@ -223,17 +223,18 @@ def _fetch_zai_usage() -> Optional[dict[str, Any]]:
                 quota_data = json.loads(resp.read())
 
             for limit in quota_data.get("data", {}).get("limits", []):
-                lt_type = limit.get("limit_type", "")
+                lt_type = limit.get("type", "")
                 unit = limit.get("unit", 0)
                 remaining = int(limit.get("remaining", 0))
                 usage_l = int(limit.get("usage", 0))
                 total = remaining + usage_l
+                # unit 5 = 5-hour window (TIME_LIMIT), unit 6 = 7-day window (TOKENS_LIMIT)
                 if unit == 5 and lt_type == "TIME_LIMIT":
                     limit_5h = total
-                    reset_5h_ts = limit.get("next_reset_time")
+                    reset_5h_ts = limit.get("nextResetTime")
                 elif unit == 6 and lt_type == "TOKENS_LIMIT":
                     limit_7d = total
-                    reset_7d_ts = limit.get("next_reset_time")
+                    reset_7d_ts = limit.get("nextResetTime")
         except Exception as exc:
             logger.debug("Z.AI quota fetch failed (non-critical): %s", exc)
 
@@ -303,13 +304,16 @@ def get_enabled_providers() -> list[str]:
 
     Uses the same detection logic as api/providers.py so the rail icons
     match which providers the user has actually configured.
+
+    OAuth providers (copilot, etc.) are excluded because we cannot fetch
+    usage data for them via the provider APIs.
     """
     try:
         from api.providers import get_providers
         providers_data = get_providers()
         return [
             p["id"] for p in providers_data.get("providers", [])
-            if p.get("has_key", False)
+            if p.get("has_key", False) and not p.get("is_oauth", False)
         ]
     except Exception as exc:
         logger.warning("Could not determine enabled providers: %s", exc)
