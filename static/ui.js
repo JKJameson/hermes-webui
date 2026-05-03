@@ -295,10 +295,25 @@ function renderProviderUsageIcons(){
     // Tooltip text
     let tip=label;
     if(usage&&(usage.limit_5h>0||usage.limit_7d>0)){
+      const now=Date.now();
+      const _fmtRel=(ts)=>{
+        if(!ts) return '—';
+        const s=Math.max(0,Math.round((ts-now)/1000));
+        if(s<60) return `${s}s`;
+        if(s<3600) return `${Math.round(s/60)}m`;
+        if(s<86400) return `${(s/3600).toFixed(1)}h`;
+        return `${(s/86400).toFixed(1)}d`;
+      };
       const parts=[];
-      if(usage.limit_5h>0) parts.push(`${_fmtUsageNum(usage.used_5h)}/${_fmtUsageNum(usage.limit_5h)} (5h)`);
-      if(usage.limit_7d>0) parts.push(`${_fmtUsageNum(usage.used_7d)}/${_fmtUsageNum(usage.limit_7d)} (7d)`);
-      tip=`${label}\n${parts.join('\n')}`;
+      if(usage.limit_5h>0){
+        const pct=Math.round((usage.used_5h/usage.limit_5h)*100);
+        parts.push(`${pct}% (5h) — ${_fmtRel(usage.reset_5h_ts)} left`);
+      }
+      if(usage.limit_7d>0){
+        const pct=Math.round((usage.used_7d/usage.limit_7d)*100);
+        parts.push(`${pct}% (7d) — ${_fmtRel(usage.reset_7d_ts)} left`);
+      }
+      tip=`${parts.join('\n')}`;
     }else if(usage){
       tip=`${label}: no limit set`;
     }else{
