@@ -1458,8 +1458,9 @@ def _run_agent_streaming(
                 break  # nothing active — stop the ticker
             if _metering_stop.wait(interval):
                 break  # stream was cancelled or ended — exit
-            stats = meter().get_stats()
-            stats['session_id'] = stream_id
+            stats = meter().get_stats(stream_id)
+            stats['session_id'] = session_id
+            stats['stream_id'] = stream_id
             put('metering', stats)
 
     _metering_thread = threading.Thread(target=_metering_ticker, daemon=True)
@@ -1629,8 +1630,9 @@ def _run_agent_streaming(
                 if now - _metering_last_emit[0] < 0.1:
                     return
                 _metering_last_emit[0] = now
-                stats = meter().get_stats()
-                stats['session_id'] = stream_id
+                stats = meter().get_stats(stream_id)
+                stats['session_id'] = session_id
+                stats['stream_id'] = stream_id
                 put('metering', stats)
 
             def on_token(text):

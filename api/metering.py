@@ -1,9 +1,9 @@
 """
 Hermes Web UI -- Streaming performance metering.
 
-Tracks Tokens Per Second (TPS) across all active WebUI sessions, and the
-HIGH/LOW TPS values observed over the past 60 minutes.  Metering data is
-emitted via SSE events so the header label can update live during a stream.
+Tracks Tokens Per Second (TPS) across all active WebUI sessions.  Metering
+data is emitted via SSE events so the sidebar indicator can update live
+during a stream.
 
 Architecture
 ────────────
@@ -15,13 +15,9 @@ The global tps is the average of all currently active sessions' TPS values.
 This correctly represents the system's real-time capacity regardless of how
 many sessions are running or how long each has been streaming.
 
-For HIGH/LOW tracking, every stats snapshot records the current global tps
-(only when > 0 — idle periods are skipped) into a rolling 60-minute history.
-The max/min of that history gives the peak throughput observed over the past hour.
-
 The ticker in streaming.py calls get_interval() — it returns 1.0 when sessions
-are actively receiving tokens so the header updates at 1 Hz, and 10.0 when idle
-so the ticker exits and no idle readings are emitted.
+are actively receiving tokens so the sidebar updates at 1 Hz, and 10.0 when
+idle so the ticker exits and no idle readings are emitted.
 
 Usage from api/streaming.py
 ─────────────────────────────
@@ -33,10 +29,9 @@ Usage from api/streaming.py
 
 The SSE `metering` event payload:
   {
-    "tps": 47.3,    # average TPS across active sessions (real-time)
-    "high": 52.1,   # highest average TPS observed in the past 60 minutes
-    "low":  31.4,   # lowest average TPS (excl. readings < 1 tps, to ignore idle)
-    "active": 1,    # sessions currently streaming
+    "tps": 47.3,       # average TPS across active sessions (real-time)
+    "active": 1,       # sessions currently streaming
+    "session_tps": ..., # per-session TPS when stream_id is passed to get_stats()
   }
 """
 
@@ -46,7 +41,6 @@ import threading
 import time
 from dataclasses import dataclass
 
-_HOUR_SECS = 3600.0   # rolling window for HIGH/LOW tracking
 _STALE_SECS = 60.0    # consider a session inactive after this
 
 
@@ -69,22 +63,17 @@ class _SessionMeter:
 class GlobalMeter:
     """Thread-safe global streaming meter.
 
-    Tracks per-session TPS, averages them for a global tps, and maintains a
-    60-minute rolling history of global tps snapshots for HIGH/LOW reporting.
+    Tracks per-session TPS and computes an average for the global tps.
     """
 
     __slots__ = (
         '_lock',
         '_sessions',        # stream_id -> _SessionMeter
-        '_readings',        # [(monotonic_ts, tps), ...] rolling 60-minute history
-        '_window_start',    # monotonic ts of current window
     )
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._sessions: dict[str, _SessionMeter] = {}
-        self._readings: list[tuple[float, float]] = []
-        self._window_start: float = time.monotonic()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -133,7 +122,7 @@ class GlobalMeter:
         with self._lock:
             self._sessions.pop(stream_id, None)
 
-    def get_stats(self) -> dict:
+    def get_stats(self, stream_id: str | None = None) -> dict:
         now = time.monotonic()
         with self._lock:
             # Prune stale sessions
@@ -144,10 +133,6 @@ class GlobalMeter:
             for sid in stale:
                 self._sessions.pop(sid, None)
 
-            # Reset window if everything went stale
-            if not self._sessions:
-                self._window_start = now
-
             # Compute global tps: average of per-session TPS values
             active = [s for s in self._sessions.values() if s.first_token_ts > 0]
             if active:
@@ -155,27 +140,19 @@ class GlobalMeter:
             else:
                 global_tps = 0.0
 
-            # Prune readings older than 1 hour
-            cutoff = now - _HOUR_SECS
-            self._readings = [(ts, v) for ts, v in self._readings if ts > cutoff]
-
-            # Only record this snapshot for HIGH/LOW if there is active work.
-            # This prevents idle periods from flooding the history and keeps
-            # HIGH/LOW meaningful for the past hour of actual throughput.
-            if global_tps > 0:
-                self._readings.append((now, global_tps))
-
-            # HIGH/LOW from the past hour (skip near-zero idle readings)
-            active_readings = [v for _, v in self._readings if v >= 1.0]
-            high = max(active_readings) if active_readings else 0.0
-            low = min(active_readings) if active_readings else 0.0
-
-            return {
+            result = {
                 'tps': round(global_tps, 1),
-                'high': round(high, 1),
-                'low': round(low, 1),
                 'active': len(self._sessions),
             }
+
+            # When called with a stream_id, include that session's own TPS so the
+            # SSE metering event can update the correct per-conversation indicator.
+            if stream_id is not None:
+                s = self._sessions.get(stream_id)
+                if s is not None and s.first_token_ts > 0:
+                    result['session_tps'] = round(s.tps(), 1)
+
+            return result
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────────

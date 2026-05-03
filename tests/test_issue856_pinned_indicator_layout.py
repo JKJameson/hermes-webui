@@ -38,45 +38,44 @@ def test_pinned_indicator_uses_fixed_indicator_box():
 
 
 def test_state_indicator_uses_right_actions_slot_to_prevent_title_shift():
-    """State span reuses the right-side action slot so the title start position
-    does not shift when the spinner or unread dot appears/disappears."""
+    """State span is appended to a .session-time-wrapper inside titleRow, placed
+    left of the timestamp, so the title start position does not shift when the
+    spinner appears/disappears. The unread dot is on .session-time-wrapper."""
     title_row_idx = SESSIONS_JS.find("titleRow.className='session-title-row';")
     assert title_row_idx != -1, "title row construction not found"
 
-    title_row_append_idx = SESSIONS_JS.find("titleRow.appendChild(state);", title_row_idx)
-    assert title_row_append_idx == -1, (
-        "state indicator should not be inserted before the title; it should reuse "
-        "the right-side actions slot to avoid title shift"
+    # state should NOT be appended directly to the outer row (el)
+    el_append_state_idx = SESSIONS_JS.find("el.appendChild(state);")
+    assert el_append_state_idx == -1, (
+        "state indicator should not be appended to the outer row el; "
+        "it must live in the titleRow flex flow"
     )
 
+    # state is created and appended to a wrapper inside titleRow
     state_idx = SESSIONS_JS.find("state.className='session-attention-indicator session-state-indicator'")
-    assert state_idx != -1, "right-side attention indicator creation not found"
+    assert state_idx != -1, "attention indicator creation not found"
 
-    append_to_row_idx = SESSIONS_JS.find("el.appendChild(state);", state_idx)
-    assert append_to_row_idx != -1, "state indicator should be appended to the outer row"
+    wrapper_append_state_idx = SESSIONS_JS.find("wrapper.appendChild(state);", state_idx)
+    assert wrapper_append_state_idx != -1, "state should be appended to wrapper"
 
-    actions_idx = SESSIONS_JS.find("actions.className='session-actions';", append_to_row_idx)
-    assert actions_idx != -1, "session actions should still be appended after attention indicator"
+    wrapper_class_idx = SESSIONS_JS.find("wrapper.className='session-time-wrapper'")
+    assert wrapper_class_idx != -1, "session-time-wrapper creation not found"
+
+    title_row_append_wrapper_idx = SESSIONS_JS.find("titleRow.appendChild(wrapper);", wrapper_class_idx)
+    assert title_row_append_wrapper_idx != -1, "wrapper should be appended to titleRow"
+
+    actions_idx = SESSIONS_JS.find("actions.className='session-actions';", wrapper_class_idx)
+    assert actions_idx != -1, "session actions should still be appended after wrapper"
 
     assert ".session-attention-indicator{" in STYLE_CSS, "attention indicator CSS rule missing"
     css_block = STYLE_CSS[
         STYLE_CSS.find(".session-attention-indicator{"):
-        STYLE_CSS.find(".session-item:hover .session-attention-indicator")
+        STYLE_CSS.find(".session-state-indicator.is-streaming")
     ]
-    assert "position:absolute;" in css_block, "attention indicator should be positioned in the row action slot"
-    assert "right:6px;" in css_block, "attention indicator should align with the actions trigger"
-    assert "width:26px;" in css_block, "attention indicator should use the same width as the actions trigger"
-    assert "height:26px;" in css_block, "attention indicator should use the same height as the actions trigger"
+    assert "display:inline-flex;" in css_block, "attention indicator should use inline-flex (not absolute)"
+    assert "width:auto;" in css_block, "attention indicator width should be auto for TPS text"
+    assert ".session-attention-indicator.is-streaming{" in STYLE_CSS
     assert ".session-attention-indicator.is-streaming::before{" in STYLE_CSS
-    inner_spinner_block = STYLE_CSS[
-        STYLE_CSS.find(".session-attention-indicator.is-streaming::before{"):
-        STYLE_CSS.find(".session-attention-indicator.is-unread::before{")
-    ]
-    assert "width:10px;" in inner_spinner_block, "spinner glyph should stay 10px inside the 26px action slot"
-    assert "height:10px;" in inner_spinner_block, "spinner glyph should stay 10px inside the 26px action slot"
-
-    hover_rule = ".session-item:hover .session-attention-indicator"
-    assert hover_rule in STYLE_CSS, "hover rule should hide attention indicator when actions appear"
 
 
 def test_timestamp_hidden_when_attention_state_is_present():

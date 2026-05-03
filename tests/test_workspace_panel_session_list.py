@@ -153,18 +153,18 @@ class TestProjectDotPlacement:
         )
 
     def test_dot_placed_between_title_and_timestamp(self):
-        """The dot is appended AFTER title.appendChild and BEFORE ts append
-        — that ordering puts the dot between the title and the timestamp
-        in the flex row."""
+        """The dot is appended AFTER title.appendChild and BEFORE the wrapper
+        containing ts is appended — that ordering puts the dot between the
+        title and the timestamp in the flex row."""
         idx = SESSIONS_JS.find("function _renderOneSession(")
         body = SESSIONS_JS[idx: idx + 6000]
         title_pos = body.find("titleRow.appendChild(title);")
         dot_pos = body.find("titleRow.appendChild(dot);")
-        ts_pos = body.find("titleRow.appendChild(ts);")
-        assert title_pos >= 0 and dot_pos >= 0 and ts_pos >= 0
-        assert title_pos < dot_pos < ts_pos, (
-            f"Order must be title → dot → ts in the title row "
-            f"(positions: {title_pos}, {dot_pos}, {ts_pos})"
+        wrapper_pos = body.find("titleRow.appendChild(wrapper);")
+        assert title_pos >= 0 and dot_pos >= 0 and wrapper_pos >= 0
+        assert title_pos < dot_pos < wrapper_pos, (
+            f"Order must be title → dot → wrapper in the title row "
+            f"(positions: {title_pos}, {dot_pos}, {wrapper_pos})"
         )
 
     def test_session_time_uses_flex_flow_not_absolute(self):

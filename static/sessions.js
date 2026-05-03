@@ -16,6 +16,20 @@ const ICONS={
 // before the first request completes (#1060).
 let _loadingSessionId = null;
 
+// Per-session rolling window of raw tps readings: {sid -> [{t, v}]}.
+// Each entry: t=timestamp_ms, v=raw tps number. Kept for 5 seconds; older
+// entries are pruned before computing the rolling average. This smooths out
+// momentary pauses so the displayed value doesn't flicker on every gap.
+const _tpsWindow = {};
+// Last display value shown per session: {sid -> string}. Used as immediate
+// fallback when renderSessionList() rebuilds the DOM so the correct value
+// is shown from the first paint without going through the throttle.
+const _tpsLastDisplay = {};
+// Last time (ms) we updated the DOM for a given session. Used to throttle
+// DOM updates to at most once per second regardless of how many metering
+// events arrive.
+const _tpsLastUpdate = {};
+
 const SESSION_VIEWED_COUNTS_KEY = 'hermes-session-viewed-counts';
 const SESSION_COMPLETION_UNREAD_KEY = 'hermes-session-completion-unread';
 const SESSION_OBSERVED_STREAMING_KEY = 'hermes-session-observed-streaming';
@@ -129,6 +143,52 @@ function _forgetObservedStreamingSession(sid) {
   delete observed[sid];
   _saveSessionObservedStreaming();
 }
+
+// ── Per-session TPS (tokens-per-second) rolling average ──────────────────────
+
+// Appends rawTps to the rolling window and schedules a DOM refresh.
+// Call _refreshTpsLabel(sid) directly when you need an immediate flush
+// (e.g., when renderSessionList() rebuilds the DOM).
+function _updateSessionTpsLabel(sid, rawTps) {
+  if (sid == null || rawTps == null) return;
+  if (!_tpsWindow[sid]) _tpsWindow[sid] = [];
+  _tpsWindow[sid].push({ t: Date.now(), v: rawTps });
+  // Enforce 5-second rolling window.
+  const cutoff = Date.now() - 5000;
+  _tpsWindow[sid] = _tpsWindow[sid].filter(e => e.t >= cutoff);
+  _refreshTpsLabel(sid);
+}
+
+// Computes the rolling average from _tpsWindow[sid] and updates the DOM.
+// If the window is empty (e.g., processing pause), preserves _tpsLastDisplay.
+// DOM updates are throttled to 1fps.
+function _refreshTpsLabel(sid) {
+  if (!sid) return;
+  const now = Date.now();
+  // Throttle: skip if updated in the last 1000ms.
+  if (_tpsLastUpdate[sid] && now - _tpsLastUpdate[sid] < 1000) return;
+  _tpsLastUpdate[sid] = now;
+
+  const entries = _tpsWindow[sid] || [];
+  let display;
+  if (entries.length === 0) {
+    display = _tpsLastDisplay[sid] !== undefined ? _tpsLastDisplay[sid] : '—';
+  } else {
+    const sum = entries.reduce((acc, e) => acc + e.v, 0);
+    const avg = sum / entries.length;
+    display = avg >= 1000 ? (avg / 1000).toFixed(1) + 'K' : Math.round(avg).toString();
+    _tpsLastDisplay[sid] = display;
+  }
+
+  // Find the session-row element via data attribute and update its state text.
+  const el = document.querySelector('[data-session-id="' + sid + '"] .session-attention-indicator');
+  if (el) {
+    el.textContent = display;
+  }
+}
+
+// ── /Per-session TPS ─────────────────────────────────────────────────────────
+
 
 function _hasUnreadForSession(s) {
   if (!s || !s.session_id) return false;
@@ -2119,8 +2179,7 @@ function renderSessionListFromCache(){
     const tsMs=_sessionTimestampMs(s);
     const ts=document.createElement('span');
     const hasAttentionState=isStreaming||hasUnread;
-    ts.className='session-time'+(hasAttentionState?' is-hidden':'');
-    ts.textContent=hasAttentionState?'':_formatRelativeSessionTime(tsMs);
+    ts.className='session-time'+(hasAttentionState?' is-hidden':'')+(hasUnread&&!isStreaming?' is-unread':'');
     titleRow.appendChild(title);
     const childCount=typeof s._child_session_count==='number'?s._child_session_count:(Array.isArray(s._child_sessions)?s._child_sessions.length:0);
     if(childCount>0){
@@ -2154,7 +2213,25 @@ function renderSessionListFromCache(){
         titleRow.appendChild(dot);
       }
     }
-    titleRow.appendChild(ts);
+    // Wrapper holds both the timestamp and streaming/unread state indicator —
+    // placed left of the title's flex:1 right edge so the indicator appears
+    // between title and where the timestamp would normally sit.
+    const wrapper=document.createElement('span');
+    wrapper.className='session-time-wrapper'+(hasUnread&&!isStreaming?' is-unread':'');
+    ts.className='session-time'+(hasAttentionState?' is-hidden':'');
+    ts.textContent=hasAttentionState?'':_formatRelativeSessionTime(tsMs);
+    wrapper.appendChild(ts);
+    // Streaming / unread state indicator — placed directly left of the timestamp.
+    const state=document.createElement('span');
+    state.className='session-attention-indicator session-state-indicator'+(isStreaming?' is-streaming':'');
+    state.setAttribute('aria-hidden','true');
+    if(isStreaming){
+      state.textContent = _tpsLastDisplay[s.session_id] !== undefined
+        ? _tpsLastDisplay[s.session_id]
+        : '—';
+    }
+    wrapper.appendChild(state);
+    titleRow.appendChild(wrapper);
     sessionText.appendChild(titleRow);
     const density=(window._sidebarDensity==='detailed'?'detailed':'compact');
     if(density==='detailed'){
@@ -2283,10 +2360,6 @@ function renderSessionListFromCache(){
     // (Project dot is appended above, between title and timestamp, so it
     // sits outside the truncating title span and stays visible.)
     el.appendChild(sessionText);
-    const state=document.createElement('span');
-    state.className='session-attention-indicator session-state-indicator'+(isStreaming?' is-streaming':(hasUnread?' is-unread':''));
-    state.setAttribute('aria-hidden','true');
-    el.appendChild(state);
     // Single trigger button that opens a shared dropdown menu
     const actions=document.createElement('div');
     actions.className='session-actions';

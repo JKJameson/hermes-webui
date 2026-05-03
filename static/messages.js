@@ -929,6 +929,23 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       sendBrowserNotification('Response complete',assistantText?assistantText.slice(0,100):'Task finished');
     });
 
+    source.addEventListener('metering',e=>{
+      // Rolling 5-second average tps per session — maintained by _updateSessionTpsLabel.
+      // d.session_tps is the per-session TPS (from meter().get_stats(stream_id));
+      // d.tps is the global average across all active sessions.
+      try{
+        const d=JSON.parse(e.data||'{}');
+        if(!d.session_id){ return; }
+        // Use per-session TPS; fall back to global tps if not present.
+        const rawTps = (typeof d.session_tps === 'number' && d.session_tps > 0)
+          ? d.session_tps
+          : (typeof d.tps === 'number' ? d.tps : null);
+        // Use d.session_id directly — the backend now sends the actual session_id,
+        // not stream_id (they differ for resumed/continued sessions).
+        _updateSessionTpsLabel(d.session_id, rawTps);
+      }catch(err){}
+    });
+
     source.addEventListener('stream_end',e=>{
       _terminalStateReached=true;
       try{
