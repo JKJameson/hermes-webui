@@ -91,39 +91,17 @@ def _get_api_key(provider: str) -> Optional[str]:
     return None
 
 
-def _get_minimax_group_id() -> Optional[str]:
-    """Return the MiniMax GroupId (stored as api_url in config)."""
-    try:
-        from api.config import get_config
-        cfg = get_config()
-        providers = cfg.get("providers", {})
-        minimax = providers.get("minimax", {})
-        # api_url field stores the GroupId for MiniMax
-        group_id = minimax.get("api_url") or minimax.get("group_id")
-        if group_id:
-            return str(group_id)
-    except Exception:
-        pass
-
-    # Fallback: MINIMAX_GROUP_ID env var
-    return os.getenv("MINIMAX_GROUP_ID")
-
-
 # ─── MiniMax API ──────────────────────────────────────────────────────────────
 
 def _fetch_minimax_usage() -> Optional[dict[str, Any]]:
     api_key = _get_api_key("minimax")
-    group_id = _get_minimax_group_id()
     if not api_key:
-        return None
-    if not group_id:
-        logger.debug("MiniMax usage: no group_id configured")
         return None
 
     try:
         import urllib.request
 
-        url = f"{_MINIMAX_USAGE_URL}?GroupId={group_id}"
+        url = _MINIMAX_USAGE_URL
         req = urllib.request.Request(
             url,
             headers={
