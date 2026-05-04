@@ -234,9 +234,7 @@ let _providerUsageCache=[];
 
 async function loadProviderUsage(){
   try{
-    const res=await fetch('/api/usage/limits');
-    if(!res.ok) return;
-    _providerUsageCache=await res.json();
+    _providerUsageCache=await api('/api/usage/limits');
     renderProviderUsageIcons();
   }catch(e){console.error('Failed to load provider usage',e);}
 }

@@ -1680,7 +1680,7 @@ function renderWorkspaceDropdownInto(dd, workspaces, currentWs){
       opt.style.display=show?'':'none';
       if(show) visible++;
     }
-    noResults.style.display=visible?'':'none';
+    noResults.style.display=visible?'none':'';
   }
 
   function renderList(){
@@ -2982,7 +2982,12 @@ function _schedulePreferencesAutosave(){
 
 async function _autosavePreferencesSettings(payload){
   try{
-    await api('/api/settings',{method:'POST',body:JSON.stringify(payload)});
+    const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(payload)});
+    if(payload&&payload.simplified_tool_calling!==undefined){
+      window._simplifiedToolCalling=(saved&&saved.simplified_tool_calling!==false);
+      if(typeof clearMessageRenderCache==='function') clearMessageRenderCache();
+      if(typeof renderMessages==='function') renderMessages();
+    }
     _settingsPreferencesAutosaveRetryPayload=null;
     _setPreferencesAutosaveStatus('saved');
     // Only clear the global dirty flag and hide the unsaved-changes bar when
@@ -3016,10 +3021,17 @@ function _retryPreferencesAutosave(){
 async function loadSettingsPanel(){
   try{
     const settings=await api('/api/settings');
-    // Populate the version badge from the server — keeps it in sync with git
+    // Populate the version badges from the server — keeps them in sync with git
     // tags automatically without any manual release step.
-    const vbadge=document.querySelector('.settings-version-badge');
-    if(vbadge && settings.webui_version) vbadge.textContent=settings.webui_version;
+    const webuiBadge = $('settings-webui-version-badge');
+    if(webuiBadge){
+      webuiBadge.textContent = `WebUI: ${settings.webui_version || 'not detected'}`;
+    }
+    const agentBadge = $('settings-agent-version-badge');
+    if(agentBadge){
+      const agentVersion = (settings.agent_version || 'not detected').toString().trim() || 'not detected';
+      agentBadge.textContent = `Agent: ${agentVersion}`;
+    }
     // Hydrate appearance controls first so a slow /api/models request
     // cannot overwrite an in-progress theme/skin selection.
     const themeSel=$('settingsTheme');
@@ -3213,11 +3225,28 @@ async function loadSettingsPanel(){
     // Password field: always blank (we don't send hash back)
     const pwField=$('settingsPassword');
     if(pwField){pwField.value='';pwField.addEventListener('input',_markSettingsDirty,{once:false});}
-    // Show auth buttons only when auth is active
-    try{
-      const authStatus=await api('/api/auth/status');
-      _setSettingsAuthButtonsVisible(!!authStatus.auth_enabled);
-    }catch(e){}
+    // #1560: when HERMES_WEBUI_PASSWORD env var is set, the settings password
+    // field silently no-ops. Disable it + reveal the lock banner so the UI
+    // tells the truth before a user tries (and the backend now also returns
+    // 409 as defense-in-depth).
+    const pwEnvLocked=!!settings.password_env_var;
+    const pwLockBanner=$('settingsPasswordEnvLock');
+    if(pwField){
+      pwField.disabled=pwEnvLocked;
+      if(pwEnvLocked){
+        pwField.value='';
+        pwField.placeholder=t('password_env_var_locked_placeholder')||pwField.placeholder;
+      }
+    }
+    if(pwLockBanner) pwLockBanner.style.display=pwEnvLocked?'block':'none';
+    // #1560: env-var-locked password also disables the Disable Auth button —
+    // clearing settings.password_hash is silent no-op when the env var is set,
+    // and the backend now returns 409 anyway, so don't offer the action.
+    // Sign Out remains available since it only clears the session cookie.
+    if(pwEnvLocked){
+      const disableBtn=$('btnDisableAuth');
+      if(disableBtn) disableBtn.style.display='none';
+    }
     _syncHermesPanelSessionActions();
     loadProvidersPanel(); // load provider cards in background
     switchSettingsSection(_settingsSection);
@@ -3261,7 +3290,13 @@ function _buildProviderCard(p){
   // Use the is_oauth flag from the backend — it reflects _OAUTH_PROVIDERS in providers.py.
   // key_source can be 'oauth' (hermes auth), 'config_yaml' (token in config.yaml), or 'none'.
   const isOauth=p.is_oauth===true;
-  const modelCount=Array.isArray(p.models)?p.models.length:0;
+  // models_total reflects the complete catalog (e.g. 396 for a large-tier
+  // Nous Portal account). The "models" array may be trimmed to a featured
+  // subset for UI scannability — fall back to its length only when the
+  // server didn't supply models_total (older builds, custom providers).
+  const modelCount=Number.isFinite(p.models_total)
+    ? p.models_total
+    : (Array.isArray(p.models) ? p.models.length : 0);
   const sourceLabel=p.key_source==='oauth'
     ? t('providers_status_oauth')
     : p.key_source==='config_yaml'
@@ -3362,11 +3397,27 @@ function _buildProviderCard(p){
     modelSection.appendChild(modelLabel);
     const modelList=document.createElement('div');
     modelList.className='provider-card-model-tags';
-    for(const m of p.models){
+    const renderedModels=Array.isArray(p.models)?p.models:[];
+    for(const m of renderedModels){
       const tag=document.createElement('span');
       tag.className='provider-card-model-tag';
       tag.textContent=m.id||m.label||m;
       modelList.appendChild(tag);
+    }
+    // When the rendered list is a strict subset of the total catalog (Nous
+    // Portal large-tier accounts hit this with ~400-model catalogs), show
+    // a "+N more" trailing pill so the user knows the picker is intentionally
+    // capped — and they can still reach the full catalog via the /model
+    // slash command (its autocomplete consumes the un-trimmed list from
+    // /api/models's extra_models field). #1567.
+    const totalCount=Number.isFinite(p.models_total)?p.models_total:renderedModels.length;
+    const hiddenCount=Math.max(0, totalCount - renderedModels.length);
+    if(hiddenCount>0){
+      const more=document.createElement('span');
+      more.className='provider-card-model-tag provider-card-model-tag-more';
+      more.textContent='+'+hiddenCount+' more';
+      more.title="The /model slash command can autocomplete every model in this provider's catalog.";
+      modelList.appendChild(more);
     }
     modelSection.appendChild(modelList);
     body.appendChild(modelSection);
@@ -3414,6 +3465,11 @@ async function _saveProviderKey(providerId){
     if(res.ok){
       showToast(res.provider+' key '+res.action);
       els.input.value='';
+      // Invalidate every dropdown surface that caches /api/models so the
+      // newly-configured provider's models show up without a server restart
+      // or page reload (#1539). Server-side invalidate_models_cache() is
+      // already called by api/providers.py:set_provider_key.
+      _refreshModelDropdownsAfterProviderChange();
       await loadProvidersPanel(); // refresh list
     }else{
       showToast(res.error||'Failed to save key');
@@ -3435,6 +3491,12 @@ async function _removeProviderKey(providerId){
     const res=await api('/api/providers/delete',{method:'POST',body:JSON.stringify({provider:providerId})});
     if(res.ok){
       showToast(res.provider+' key '+t('providers_key_removed').toLowerCase());
+      // Drop the removed provider from every cached dropdown surface so it
+      // disappears immediately — composer picker, /model slash command,
+      // Settings → Default Model, configured-model badges (#1539).
+      // Without this, a stale list from before the delete keeps offering
+      // the now-removed provider's models until the page is reloaded.
+      _refreshModelDropdownsAfterProviderChange();
       await loadProvidersPanel(); // refresh list
     }else{
       showToast(res.error||'Failed to remove key');
@@ -3443,6 +3505,28 @@ async function _removeProviderKey(providerId){
   }catch(e){
     showToast('Error: '+e.message);
     if(els.saveBtn){els.saveBtn.disabled=false;els.saveBtn.textContent=t('providers_save');}
+  }
+}
+
+// Shared dropdown-cache flush invoked after a provider add/remove. The
+// server-side TTL cache is already invalidated by /api/providers and
+// /api/providers/delete (via api/providers.py:set_provider_key); this
+// flushes the JS-side caches so the next render rebuilds from a fresh
+// /api/models response. Wrapped in a try/catch so a UI module that hasn't
+// loaded yet (e.g. during early Settings open) cannot break the save flow.
+function _refreshModelDropdownsAfterProviderChange(){
+  try{
+    if(typeof window._invalidateSlashModelCache==='function'){
+      window._invalidateSlashModelCache();
+    }
+    if(typeof populateModelDropdown==='function'){
+      // Fire-and-forget: don't block the providers panel refresh on a
+      // dropdown rebuild. The composer/Settings dropdowns will catch up
+      // on the very next paint frame.
+      Promise.resolve(populateModelDropdown()).catch(()=>{});
+    }
+  }catch(_e){
+    // Swallow — dropdown refresh is best-effort, providers panel must still update.
   }
 }
 
@@ -3524,8 +3608,13 @@ async function checkUpdatesNow(){
       if(status){status.textContent=t('settings_updates_disabled');status.style.color='var(--muted)';}
     } else {
       const parts=[];
-      if(data.webui&&data.webui.behind>0) parts.push('WebUI: '+data.webui.behind);
-      if(data.agent&&data.agent.behind>0) parts.push('Agent: '+data.agent.behind);
+      const formatUpdatePart=(typeof _formatUpdateTargetStatus==='function')
+        ? _formatUpdateTargetStatus
+        : ((label,info)=>info&&info.behind>0?label+': '+info.behind:null);
+      const webuiPart=formatUpdatePart('WebUI',data.webui);
+      const agentPart=formatUpdatePart('Agent',data.agent);
+      if(webuiPart) parts.push(webuiPart);
+      if(agentPart) parts.push(agentPart);
       if(parts.length){
         if(status){status.textContent=t('settings_updates_available').replace('{count}',parts.join(', '));status.style.color='var(--accent)';}
         // Also trigger the update banner
