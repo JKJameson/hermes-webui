@@ -4649,11 +4649,14 @@ async function loadProvidersPanel(){
   }
 }
 
-function _formatProviderQuotaMoney(value){
+function _formatProviderQuotaValue(value, is_money){
   if(value===null||value===undefined||value==='') return '—';
   const n=Number(value);
   if(!Number.isFinite(n)) return '—';
-  return '$'+n.toFixed(2);
+  if(is_money) return '$'+n.toFixed(2);
+  if(n>=1000000) return(n/1000000).toFixed(1)+'M';
+  if(n>=1000) return(n/1000).toFixed(1)+'k';
+  return String(Math.floor(n));
 }
 
 function _buildProviderQuotaCard(status){
@@ -4666,9 +4669,9 @@ function _buildProviderQuotaCard(status){
   let body='';
   if(status.status==='available'&&quota){
     body=`
-      <div class="provider-quota-metric"><span>Remaining</span><strong>${esc(_formatProviderQuotaMoney(quota.limit_remaining))}</strong></div>
-      <div class="provider-quota-metric"><span>Used</span><strong>${esc(_formatProviderQuotaMoney(quota.usage))}</strong></div>
-      <div class="provider-quota-metric"><span>Limit</span><strong>${esc(_formatProviderQuotaMoney(quota.limit))}</strong></div>
+      <div class="provider-quota-metric"><span>Remaining</span><strong>${esc(_formatProviderQuotaValue(quota.limit_remaining,status.provider==='openrouter'))}</strong></div>
+      <div class="provider-quota-metric"><span>Used</span><strong>${esc(_formatProviderQuotaValue(quota.usage,status.provider==='openrouter'))}</strong></div>
+      <div class="provider-quota-metric"><span>Limit</span><strong>${esc(_formatProviderQuotaValue(quota.limit,status.provider==='openrouter'))}</strong></div>
     `;
   }else{
     body=`<div class="provider-quota-message">${esc(status.message||'Quota status unavailable')}</div>`;
