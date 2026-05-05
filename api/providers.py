@@ -358,6 +358,148 @@ def _sanitize_openrouter_quota(payload: Any) -> dict[str, int | float | None]:
     }
 
 
+def _fetch_minimax_quota(api_key: str, group_id: str | None = None) -> dict[str, Any]:
+    """Fetch MiniMax coding plan quota from the platform API.
+
+    The coding_plan/remains endpoint returns per-model usage entries. The
+    coding-plan entries (coding-plan-vlm, coding-plan-search) carry the
+    token-plan limits; MiniMax-M* entries duplicate the same figures under
+    the model's own name.  We sum all MiniMax-M* entries to get the total
+    coding-plan usage.
+
+    The GroupId query parameter is optional — omitting it returns the
+    calling account's aggregate quota across all groups.
+    """
+    url = "https://platform.minimax.io/v1/api/openplatform/coding_plan/remains"
+    if group_id:
+        url = f"{url}?GroupId={group_id}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_PROVIDER_QUOTA_TIMEOUT_SECONDS) as resp:
+            raw = resp.read()
+        payload = json.loads(raw.decode("utf-8")) if isinstance(raw, (bytes, bytearray)) else json.loads(raw)
+    except Exception:
+        return {"ok": False, "quota": None}
+
+    entries = payload.get("model_remains", []) if isinstance(payload, dict) else []
+    # Sum all MiniMax-M* model entries (the token-plan quota figures)
+    hourly_total = 0
+    weekly_total = 0
+    for entry in entries:
+        name = entry.get("model_name", "")
+        if name.startswith("MiniMax-M") or name in ("coding-plan-vlm", "coding-plan-search"):
+            hourly_total += _quota_number(entry.get("current_interval_total_count")) or 0
+            weekly_total += _quota_number(entry.get("current_weekly_total_count")) or 0
+    # used = total - remaining; remaining is in current_interval_usage_count / current_weekly_usage_count
+    hourly_used = 0
+    weekly_used = 0
+    for entry in entries:
+        name = entry.get("model_name", "")
+        if name.startswith("MiniMax-M") or name in ("coding-plan-vlm", "coding-plan-search"):
+            used_h = _quota_number(entry.get("current_interval_usage_count")) or 0
+            used_w = _quota_number(entry.get("current_weekly_usage_count")) or 0
+            # Intervals may overlap; take the max across all matching entries
+            hourly_used = max(hourly_used, used_h)
+            weekly_used = max(weekly_used, used_w)
+    # Reset timestamps — use the first entry that has them (they're account-level)
+    hourly_reset_ts = None
+    weekly_reset_ts = None
+    for entry in entries:
+        ts = entry.get("end_time")
+        if ts:
+            hourly_reset_ts = _quota_number(ts)
+            break
+    for entry in entries:
+        ts = entry.get("weekly_end_time")
+        if ts:
+            weekly_reset_ts = _quota_number(ts)
+            break
+    return {
+        "ok": True,
+        "quota": {
+            "limit_remaining": hourly_total - hourly_used if hourly_total else None,
+            "usage": hourly_used,
+            "limit": hourly_total if hourly_total else None,
+            "hourly_used": hourly_used,
+            "hourly_limit": hourly_total if hourly_total else None,
+            "hourly_reset_ts": hourly_reset_ts,
+            "weekly_used": weekly_used,
+            "weekly_limit": weekly_total if weekly_total else None,
+            "weekly_reset_ts": weekly_reset_ts,
+        },
+    }
+
+
+def _fetch_zai_quota(api_key: str) -> dict[str, Any]:
+    """Fetch Z.AI quota from the /quota/limit endpoint.
+
+    Returns limits for both the 5-hour window (TIME_LIMIT, unit=5) and
+    the 7-day window (TOKENS_LIMIT, unit=6).  The UI shows the higher of
+    the two usage percentages as the fill-bar fill.
+    """
+    req = urllib.request.Request(
+        "https://api.z.ai/api/monitor/usage/quota/limit",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Referer": "https://z.ai/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_PROVIDER_QUOTA_TIMEOUT_SECONDS) as resp:
+            raw = resp.read()
+        payload = json.loads(raw.decode("utf-8")) if isinstance(raw, (bytes, bytearray)) else json.loads(raw)
+    except Exception:
+        return {"ok": False, "quota": None}
+
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    limits = data.get("limits", []) if isinstance(data, dict) else []
+    hourly_limit = None
+    hourly_used = None
+    hourly_reset_ts = None
+    weekly_limit = None
+    weekly_used = None
+    weekly_reset_ts = None
+    for limit in limits:
+        if not isinstance(limit, dict):
+            continue
+        lt_type = str(limit.get("type") or limit.get("lt_type") or "")
+        unit = int(limit.get("unit") or 0)
+        remaining = _quota_number(limit.get("remaining"))
+        usage = _quota_number(limit.get("usage"))
+        total = (_quota_number(remaining) or 0) + (_quota_number(usage) or 0)
+        ts = _quota_number(limit.get("next_reset_time"))
+        # unit 5 = 5-hour TIME_LIMIT, unit 6 = 7-day TOKENS_LIMIT
+        if unit == 5 and "TIME_LIMIT" in lt_type:
+            hourly_limit = total or None
+            hourly_used = _quota_number(usage)
+            hourly_reset_ts = ts
+        elif unit == 6 and "TOKENS_LIMIT" in lt_type:
+            weekly_limit = total or None
+            weekly_used = _quota_number(usage)
+            weekly_reset_ts = ts
+    return {
+        "ok": True,
+        "quota": {
+            "limit_remaining": hourly_used if hourly_limit else None,
+            "usage": hourly_used,
+            "limit": hourly_limit,
+            "hourly_used": hourly_used,
+            "hourly_limit": hourly_limit,
+            "hourly_reset_ts": hourly_reset_ts,
+            "weekly_used": weekly_used,
+            "weekly_limit": weekly_limit,
+            "weekly_reset_ts": weekly_reset_ts,
+        },
+    }
+
+
 def get_provider_quota(provider_id: str | None = None) -> dict[str, Any]:
     """Return sanitized quota/rate-limit status for the active provider.
 
@@ -379,15 +521,61 @@ def get_provider_quota(provider_id: str | None = None) -> dict[str, Any]:
         }
 
     display_name = _PROVIDER_DISPLAY.get(provider, provider.replace("-", " ").title())
+
+    # ── MiniMax ────────────────────────────────────────────────────────────────
+    if provider in ("minimax", "minimax-cn"):
+        api_key = _get_provider_api_key(provider)
+        if not api_key:
+            return {
+                "ok": False, "provider": provider, "display_name": display_name,
+                "supported": True, "status": "no_key", "quota": None,
+                "message": f"{display_name} quota status needs an API key configured on the server.",
+            }
+        result = _fetch_minimax_quota(api_key)
+        if result.get("ok"):
+            return {
+                "ok": True, "provider": provider, "display_name": display_name,
+                "supported": True, "status": "available",
+                "label": f"{display_name} coding plan",
+                "quota": result["quota"],
+                "message": f"{display_name} quota status loaded.",
+            }
+        return {
+            "ok": False, "provider": provider, "display_name": display_name,
+            "supported": True, "status": "unavailable", "quota": None,
+            "message": f"{display_name} quota status is temporarily unavailable.",
+        }
+
+    # ── Z.AI ─────────────────────────────────────────────────────────────────
+    if provider == "zai":
+        api_key = _get_provider_api_key("zai")
+        if not api_key:
+            return {
+                "ok": False, "provider": "zai", "display_name": display_name,
+                "supported": True, "status": "no_key", "quota": None,
+                "message": f"Z.AI quota status needs an API key configured on the server.",
+            }
+        result = _fetch_zai_quota(api_key)
+        if result.get("ok"):
+            return {
+                "ok": True, "provider": "zai", "display_name": display_name,
+                "supported": True, "status": "available",
+                "label": "Z.AI usage limits",
+                "quota": result["quota"],
+                "message": "Z.AI quota status loaded.",
+            }
+        return {
+            "ok": False, "provider": "zai", "display_name": display_name,
+            "supported": True, "status": "unavailable", "quota": None,
+            "message": "Z.AI quota status is temporarily unavailable.",
+        }
+
+    # ── OpenRouter ───────────────────────────────────────────────────────────
     if provider != "openrouter":
         detail = "OpenAI/Anthropic rate-limit headers are a follow-up once WebUI captures provider response metadata."
         return {
-            "ok": False,
-            "provider": provider,
-            "display_name": display_name,
-            "supported": False,
-            "status": "unsupported",
-            "quota": None,
+            "ok": False, "provider": provider, "display_name": display_name,
+            "supported": False, "status": "unsupported", "quota": None,
             "message": f"Quota status is not available for {display_name}. {detail}",
         }
 
