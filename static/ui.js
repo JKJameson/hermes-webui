@@ -392,6 +392,127 @@ let _dynamicModelLabels={};
 window._configuredModelBadges=window._configuredModelBadges||{};
 const MODEL_STATE_KEY='hermes-webui-model-state';
 
+// ── Provider usage rail icons ─────────────────────────────────────────────────
+let _providerUsageCache=[];
+
+async function loadProviderUsage(){
+  try{
+    _providerUsageCache=await api('/api/usage/limits');
+    renderProviderUsageIcons();
+  }catch(e){console.error('Failed to load provider usage',e);}
+}
+
+function _fmtUsageNum(n){
+  if(n>=1000000) return(n/1000000).toFixed(1)+'M';
+  if(n>=1000) return(n/1000).toFixed(1)+'k';
+  return String(n);
+}
+
+function _providerUsageColor(pct){
+  if(pct>=80) return'var(--warning,#f59e0b)';
+  if(pct>=50) return'var(--accent,#a78bfa)';
+  return'var(--success,#22c55e)';
+}
+
+function renderProviderUsageIcons(){
+  const rail=document.querySelector('.rail');
+  if(!rail) return;
+  // Remove stale icons
+  rail.querySelectorAll('.provider-usage-btn').forEach(el=>el.remove());
+
+  const enabled=window.APP_CONFIG&&window.APP_CONFIG.enabled_providers||[];
+  if(!enabled.length) return;
+
+  const usageMap={};
+  for(const u of _providerUsageCache) usageMap[u.provider]=u;
+
+  const spacer=rail.querySelector('.rail-spacer');
+  const PROVIDER_SVGS={
+    minimax:`<img src="/static/icons/minimax_icon.svg" alt="Minimax" width="20" height="20" style="flex:none;vertical-align:middle">`,
+    zai:`<img src="/static/icons/zai_icon.svg" alt="Z.AI" width="20" height="20" style="flex:none;vertical-align:middle">`,
+  };
+  const PROVIDER_ICONS={
+    openrouter:'🌐',anthropic:'🧠',openai:'🤖',google:'🧮',
+    minimax:null,groq:'⚡',deepseek:'🔍',mistral:'🌫️',
+    cohere:'🌊',xai:'✖️',zai:null,ollama:'🔧',
+    nvidia:'🟢',gemini:'✨',copilot:'💠',nous:'🧩',
+  };
+  const PROVIDER_LABELS={
+    openrouter:'OpenRouter',anthropic:'Anthropic',openai:'OpenAI',google:'Google',
+    minimax:'MiniMax',groq:'Groq',deepseek:'DeepSeek',mistral:'Mistral',
+    cohere:'Cohere',xai:'xAI',zai:'Z.AI',ollama:'Ollama',
+    nvidia:'NVIDIA',gemini:'Gemini',copilot:'Copilot',nous:'Nous',
+  };
+
+  for(const provider of enabled){
+    const usage=usageMap[provider];
+    const svg=PROVIDER_SVGS[provider];
+    const emoji=PROVIDER_ICONS[provider];
+    const label=PROVIDER_LABELS[provider]||provider;
+    const btn=document.createElement('button');
+    btn.className='rail-btn nav-tab provider-usage-btn';
+    btn.dataset.provider=provider;
+
+    // Tooltip text
+    let tip=label;
+    if(usage&&(usage.limit_5h>0||usage.limit_7d>0)){
+      const now=Date.now();
+      const _fmtRel=(ts)=>{
+        if(!ts) return '—';
+        const s=Math.max(0,Math.round((ts-now)/1000));
+        if(s<60) return `${s}s`;
+        if(s<3600) return `${Math.round(s/60)}m`;
+        if(s<86400) return `${(s/3600).toFixed(1)}h`;
+        return `${(s/86400).toFixed(1)}d`;
+      };
+      const parts=[];
+      if(usage.limit_5h>0){
+        const pct=Math.round((usage.used_5h/usage.limit_5h)*100);
+        parts.push(`${pct}% (5h) — ${_fmtRel(usage.reset_5h_ts)} left`);
+      }
+      if(usage.limit_7d>0){
+        const pct=Math.round((usage.used_7d/usage.limit_7d)*100);
+        parts.push(`${pct}% (7d) — ${_fmtRel(usage.reset_7d_ts)} left`);
+      }
+      tip=`${parts.join('\n')}`;
+    }else if(usage){
+      tip=`${label}: no limit set`;
+    }else{
+      tip=`${label}: no usage data`;
+    }
+    btn.title=tip;
+
+    // Usage fill bar (highest of 5h or 7d percentage)
+    if(usage&&(usage.limit_5h>0||usage.limit_7d>0)){
+      const pct5h=usage.limit_5h>0?(usage.used_5h/usage.limit_5h)*100:0;
+      const pct7d=usage.limit_7d>0?(usage.used_7d/usage.limit_7d)*100:0;
+      const pct=Math.min(Math.max(pct5h,pct7d),100);
+      const fill=document.createElement('span');
+      fill.className='provider-usage-fill';
+      fill.style.cssText=`position:absolute;left:0;bottom:0;width:100%;height:${pct}%;border-radius:0 0 8px 8px;background:${_providerUsageColor(pct)};transition:height .3s ease;pointer-events:none;opacity:.28;`;
+      btn.style.position='relative';
+      btn.style.overflow='hidden';
+      btn.appendChild(fill);
+    }
+
+    const iconSpan=document.createElement('span');
+    if(svg){iconSpan.innerHTML=svg;}else{iconSpan.textContent=emoji||'📦';}
+    btn.appendChild(iconSpan);
+
+    // Click: jump model selector to this provider
+    btn.addEventListener('click',()=>{
+      const sel=document.getElementById('modelSelect')||document.getElementById('model-select');
+      if(!sel) return;
+      const opts=Array.from(sel.options);
+      const match=opts.find(o=>o.value.toLowerCase().includes(provider.toLowerCase()));
+      if(match){ sel.value=match.value; sel.dispatchEvent(new Event('change')); }
+    });
+
+    if(spacer) rail.insertBefore(btn,spacer);
+    else rail.appendChild(btn);
+  }
+}
+
 // ── Smart model resolver ────────────────────────────────────────────────────
 // Finds the best matching option value in a <select> for a given model ID.
 // Handles mismatches like 'claude-sonnet-4-6' vs 'anthropic/claude-sonnet-4.6'.

@@ -4292,8 +4292,6 @@ async function _autosavePreferencesSettings(payload){
     }
     if(payload&&payload.show_tps!==undefined){
       window._showTps=!!(saved&&saved.show_tps);
-      if(typeof clearMessageRenderCache==='function') clearMessageRenderCache();
-      if(typeof renderMessages==='function') renderMessages();
     }
     _settingsPreferencesAutosaveRetryPayload=null;
     _setPreferencesAutosaveStatus('saved');
@@ -4548,11 +4546,6 @@ async function loadSettingsPanel(){
       }
     }
     if(pwLockBanner) pwLockBanner.style.display=pwEnvLocked?'block':'none';
-    // Show auth buttons only when auth is active
-    try{
-      const authStatus=await api('/api/auth/status');
-      _setSettingsAuthButtonsVisible(!!authStatus.auth_enabled);
-    }catch(e){}
     // #1560: env-var-locked password also disables the Disable Auth button —
     // clearing settings.password_hash is silent no-op when the env var is set,
     // and the backend now returns 409 anyway, so don't offer the action.
@@ -4826,7 +4819,7 @@ function _buildProviderCard(p){
       const more=document.createElement('span');
       more.className='provider-card-model-tag provider-card-model-tag-more';
       more.textContent='+'+hiddenCount+' more';
-      more.title='The /model slash command can autocomplete every model in this provider\'s catalog.';
+      more.title="The /model slash command can autocomplete every model in this provider's catalog.";
       modelList.appendChild(more);
     }
     modelSection.appendChild(modelList);
